@@ -90,6 +90,7 @@ class UiTourTest {
         waitText("Запустить проверку").click()
         waitText("Выполняется…", 5_000)
         waitText("Запустить проверку", 120_000) // проверка закончилась
+        waitText("Активен: ", contains = true) // диагностика шла через подключённый туннель
         E2E.screenshot("14-diagnostics-top")
         device.findObject(By.scrollable(true))?.scroll(Direction.DOWN, 1.0f)
         Thread.sleep(800)

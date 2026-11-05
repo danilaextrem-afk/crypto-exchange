@@ -51,7 +51,10 @@ class VpnE2ETest {
     }
 
     @After fun tearDown() {
-        if (::conf1.isInitialized) E2E.shell("svc wifi enable")
+        if (::conf1.isInitialized) {
+            E2E.shell("svc wifi enable")
+            E2E.shell("svc data enable")
+        }
         runCatching { E2E.reset() }
     }
 
@@ -147,6 +150,25 @@ class VpnE2ETest {
         connected(120_000)
         awaitTrue(30_000, "интернет через туннель после возврата Wi-Fi") { fetch(TRACE, 5000) != null }
         assertTrue(activeIsVpn())
+    }
+
+    @Test fun t3b_secondaryNetworkChange_doesNotReconnect() {
+        app.repo.importText(conf1)
+        app.vpn.connect()
+        connected()
+        Thread.sleep(5000)
+        assumeTrue("Wi-Fi не основная сеть эмулятора", "wifi" in E2E.physicalNetworks())
+        val before = app.vpn.log.value.size
+        // Мобильные данные при работающем Wi-Fi — второстепенная сеть: туннель трогать не нужно.
+        E2E.shell("svc data disable")
+        Thread.sleep(8000)
+        E2E.shell("svc data enable")
+        Thread.sleep(8000)
+        val events = app.vpn.log.value.drop(before)
+        Log.i(TAG, "События при переключении мобильных данных: $events")
+        assertTrue("Лишнее переподключение: $events", events.none { "Смена сети" in it || "Подключение" in it })
+        assertTrue(app.vpn.state.value is VpnState.Connected)
+        assertNotNull(fetch(TRACE))
     }
 
     @Test fun t4_serverDown_trafficBlocked_thenRecovers() {
