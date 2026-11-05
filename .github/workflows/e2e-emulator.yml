@@ -4,11 +4,13 @@ name: E2E on emulator
 # который поднимается на машине сборки скриптом server/setup-wireguard.sh.
 # Ключи сервера и клиентов создаются заново при каждом запуске и исчезают вместе с машиной.
 
+# Один запуск ≈ 25 минут Actions. Для приватного репозитория минуты ограничены тарифом,
+# поэтому тест идёт на pull request и вручную (Actions → E2E on emulator → Run workflow),
+# а не повторно на каждый пуш после слияния.
 on:
-  push:
-    branches: [main, freevpn]
   pull_request:
     branches: [main, freevpn]
+    paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
 
 jobs:
