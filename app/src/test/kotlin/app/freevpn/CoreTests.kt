@@ -17,6 +17,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.net.Inet4Address
+import java.net.Inet6Address
 
 private const val CONF = """
 # Name: Test DE
@@ -167,9 +169,9 @@ class TunnelConfigFactoryTest {
     @Test fun forcesFullTunnelKeepaliveDnsAndMtu() {
         val cfg = TunnelConfigFactory.build(CONF, SplitPlan.NONE)
         val peer = cfg.peers.single()
-        val allowed = peer.allowedIps.map { it.toString() }
-        assertTrue("0.0.0.0/0" in allowed)
-        assertTrue("::/0" in allowed)
+        // Сравниваем адреса, а не текст: на JVM "::" печатается как "0:0:0:0:0:0:0:0".
+        assertTrue(peer.allowedIps.any { it.address is Inet4Address && it.mask == 0 })
+        assertTrue(peer.allowedIps.any { it.address is Inet6Address && it.mask == 0 })
         assertEquals(25, peer.persistentKeepalive.get())
         assertEquals(TunnelConfigFactory.DEFAULT_MTU, cfg.`interface`.mtu.get())
         assertFalse(cfg.`interface`.dnsServers.isEmpty())
