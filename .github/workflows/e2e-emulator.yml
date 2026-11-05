@@ -12,6 +12,11 @@ on:
     branches: [main, freevpn]
     paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
+    inputs:
+      only_proton:
+        description: "Только проверка серверов Proton (нужен секрет PROTON_CONFS)"
+        type: boolean
+        default: false
 
 jobs:
   e2e:
@@ -60,6 +65,9 @@ jobs:
 
       - name: Emulator tests
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          PROTON_CONFS: ${{ secrets.PROTON_CONFS }}
+          ONLY_CLASS: ${{ inputs.only_proton && 'app.freevpn.ProtonE2ETest' || '' }}
         with:
           api-level: 34
           arch: x86_64
@@ -84,6 +92,8 @@ jobs:
           done
           echo "=== журнал теста (FreeVpnE2E)"
           grep -h "FreeVpnE2E" e2e-out/logcat-instrumented.txt 2>/dev/null | tail -80 || true
+          echo "=== Proton (реальные серверы)"
+          grep -h "PROTON:" e2e-out/logcat-instrumented.txt 2>/dev/null || echo "секрет PROTON_CONFS не задан — проверка пропущена"
 
       - name: Screenshots to log
         if: always()

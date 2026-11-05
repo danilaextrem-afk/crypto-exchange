@@ -15,7 +15,9 @@ data class ServerProfile(
     val country: String,
     val config: String,
     val load: Int? = null,
-    val source: String = "local"
+    val source: String = "local",
+    /** Идентификатор [Provider], если конфиг выдан известным провайдером. */
+    val provider: String? = null
 ) {
     /** Хост или IP из строки Endpoint конфигурации WireGuard. */
     val endpointHost: String?

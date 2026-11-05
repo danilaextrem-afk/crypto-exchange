@@ -9,11 +9,11 @@ import java.security.MessageDigest
  */
 object SubscriptionParser {
 
-    fun parse(raw: String, source: String = "local"): List<ServerProfile> {
+    fun parse(raw: String, source: String = "local", fileName: String? = null): List<ServerProfile> {
         val text = raw.trim().removePrefix("﻿")
         require(text.isNotEmpty()) { "Пустой ввод" }
         return if (text.startsWith("{")) fromJson(text, source)
-        else listOf(fromConfig(text, null, null, null, source))
+        else listOf(fromConfig(text, null, null, null, source, fileName))
     }
 
     private fun fromJson(text: String, source: String): List<ServerProfile> {
@@ -40,20 +40,23 @@ object SubscriptionParser {
         name: String?,
         country: String?,
         load: Int?,
-        source: String
+        source: String,
+        fileName: String? = null
     ): ServerProfile {
         val config = configRaw.trim().replace("\r\n", "\n")
         validate(config)
         val commentName = Regex("(?im)^#\\s*name\\s*[:=]\\s*(.+)$").find(config)?.groupValues?.get(1)?.trim()
         val commentCountry = Regex("(?im)^#\\s*country\\s*[:=]\\s*(\\w{2})\\s*$").find(config)?.groupValues?.get(1)
         val probe = ServerProfile("", "", "", config)
+        val hint = ProviderDetector.detect(config, fileName)
         return ServerProfile(
             id = sha256(config).take(12),
-            name = name ?: commentName ?: probe.endpointHost ?: "Сервер",
-            country = (country ?: commentCountry ?: "??").uppercase().take(2),
+            name = name ?: commentName ?: hint?.name ?: probe.endpointHost ?: "Сервер",
+            country = (country ?: commentCountry ?: hint?.country ?: "??").uppercase().take(2),
             config = config,
             load = load,
-            source = source
+            source = source,
+            provider = hint?.provider?.id
         )
     }
 
