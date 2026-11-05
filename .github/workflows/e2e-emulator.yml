@@ -1,0 +1,90 @@
+name: E2E on emulator
+
+# Сквозная проверка на эмуляторе Android с НАСТОЯЩИМ WireGuard-сервером,
+# который поднимается на машине сборки скриптом server/setup-wireguard.sh.
+# Ключи сервера и клиентов создаются заново при каждом запуске и исчезают вместе с машиной.
+
+on:
+  push:
+    branches: [main, freevpn]
+  pull_request:
+    branches: [main, freevpn]
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Prepare Android SDK
+        run: |
+          SDKM="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-35" "build-tools;34.0.0"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Build release APK (same code as the published one)
+        run: |
+          ./gradlew --no-daemon :app:assembleRelease :app:assembleDebugAndroidTest
+          cp app/build/outputs/apk/release/app-release.apk FreeVPN.apk
+
+      - name: Start real WireGuard server (server/setup-wireguard.sh)
+        run: |
+          sudo PUBLIC_IP=10.0.2.2 SERVER_NAME="CI test" SERVER_COUNTRY=DE bash server/setup-wireguard.sh 51820 2
+          sudo wg show
+          for i in 1 2; do sudo base64 -w0 "/root/freevpn-clients/client$i.conf" > "$RUNNER_TEMP/c$i.b64"; done
+
+      - name: Emulator tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash ci/e2e-run.sh
+
+      - name: Results summary
+        if: always()
+        run: |
+          echo "=== wg show (сервер)"; cat e2e-out/wg-show.txt 2>/dev/null || true
+          echo "=== DNS"; cat e2e-out/dns-summary.txt 2>/dev/null || true
+          echo "=== release"; cat e2e-out/release-start.txt 2>/dev/null || true
+          echo "=== тесты"
+          for f in app/build/outputs/androidTest-results/connected/debug/*.xml app/build/outputs/androidTest-results/connected/*.xml; do
+            [ -f "$f" ] && grep -oE '<testcase [^>]*name="[^"]*"[^>]*>|<failure[^>]*>' "$f" | head -40
+          done
+          echo "=== журнал теста (FreeVpnE2E)"
+          grep -h "FreeVpnE2E" e2e-out/logcat-instrumented.txt 2>/dev/null | tail -80 || true
+
+      - name: Screenshots to log
+        if: always()
+        run: |
+          command -v convert >/dev/null || sudo apt-get install -y -qq imagemagick >/dev/null
+          for f in e2e-out/screens/*.png; do
+            [ -f "$f" ] || continue
+            convert "$f" -resize 540x -quality 72 "${f%.png}.jpg"
+            echo "=== SHOT $(basename "${f%.png}")"; base64 -w0 "${f%.png}.jpg"; echo; echo "=== END"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results
+          path: |
+            e2e-out/
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
