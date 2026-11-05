@@ -23,7 +23,7 @@ private enum class Tab(val label: String, val mark: String) {
     HOME("Главная", "●"),
     SERVERS("Серверы", "☷"),
     ROUTES("Маршруты", "⇄"),
-    DIAG("Диагностика", "✚"),
+    DIAG("Проверка", "✚"), // «Диагностика» не помещалась в нижнее меню и обрезалась
     SETTINGS("Ещё", "⋯")
 }
 
