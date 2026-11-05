@@ -91,10 +91,13 @@ class VpnManager(
     private val backend = GoBackend(app)
 
     @Volatile private var tunnelUp = false
+    /** Какой сервер (и план Split Tunneling) сейчас загружен в поднятый туннель. */
+    @Volatile private var loaded: Pair<String, SplitPlan>? = null
     private val tunnel = object : Tunnel {
         override fun getName() = TUNNEL_NAME
         override fun onStateChange(newState: Tunnel.State) {
             tunnelUp = newState == Tunnel.State.UP
+            if (!tunnelUp) loaded = null
         }
     }
 
@@ -248,7 +251,7 @@ class VpnManager(
 
     // ---------- сессия ----------
 
-    private enum class Reason { NETWORK_CHANGED, UNHEALTHY, REVOKED }
+    private enum class Reason { NETWORK_CHANGED, UNHEALTHY, REVOKED, TUNNEL_LOST }
 
     private suspend fun runSession(preferredId: String?, persistent: Boolean) {
         _state.value = VpnState.Connecting
@@ -257,6 +260,8 @@ class VpnManager(
         var attempt = 0
         var prefer: String? = preferredId
         var avoid = emptySet<String>()
+        var afterUnhealthy = false
+        var netChanged = false
         log("Подключение…")
 
         while (currentCoroutineContext().isActive) {
@@ -280,10 +285,21 @@ class VpnManager(
             }
             val hold = SessionPolicy.holdTunnelOnFailure(everConnected, persistent)
             awaitNetwork()
-            val ordered = orderServers(servers, prefer, avoid)
+            var ordered = orderServers(servers, prefer, avoid)
+            // Каждое пересоздание туннеля — доли секунды без VPN (так устроен GoBackend). Поэтому,
+            // пока все серверы недоступны, держим уже загруженный туннель и проверяем его сервер,
+            // а остальные пробуем только в каждом третьем цикле.
+            val reuse = !netChanged && (afterUnhealthy || attempt > 0)
+            val held = loaded?.first?.takeIf { tunnelUp }
+            if (!netChanged && attempt > 0 && held != null) {
+                ordered.firstOrNull { it.id == held }?.let { h ->
+                    ordered = if (attempt % 3 == 0) listOf(h) + (ordered - h) else listOf(h)
+                }
+            }
+            netChanged = false
             var connected: ServerProfile? = null
             for (s in ordered) {
-                if (tryServer(s, announce = everConnected.not(), holdOnFailure = hold)) { connected = s; break }
+                if (tryServer(s, announce = everConnected.not(), holdOnFailure = hold, reuse = reuse)) { connected = s; break }
             }
 
             if (connected == null) {
@@ -300,13 +316,14 @@ class VpnManager(
                     else "Нет связи с серверами, повтор через $wait с"
                 )
                 log("Все серверы недоступны, повтор через $wait с" + if (tunnelUp) " (трафик заблокирован)" else "")
-                waitOrNetworkChange(wait * 1000L)
+                netChanged = waitOrNetworkChange(wait * 1000L)
                 avoid = emptySet()
                 continue
             }
 
             everConnected = true
             attempt = 0
+            afterUnhealthy = false
             prefer = connected.id
             avoid = emptySet()
             when (monitor(connected)) {
@@ -319,11 +336,18 @@ class VpnManager(
                 Reason.NETWORK_CHANGED -> {
                     _state.value = VpnState.Reconnecting("Сеть изменилась")
                     log("Смена сети → переподключение")
+                    netChanged = true
+                }
+                Reason.TUNNEL_LOST -> {
+                    _state.value = VpnState.Reconnecting("Туннель перезапускается")
+                    log("Туннель остановлен без команды пользователя — поднимаю снова")
+                    netChanged = true // пересоздать туннель, тот же сервер первым
                 }
                 Reason.UNHEALTHY -> {
                     _state.value = VpnState.Reconnecting("Сервер не отвечает, переключаюсь")
                     repo.recordFailure(connected.id)
                     avoid = setOf(connected.id)
+                    afterUnhealthy = true
                     log("Сервер ${connected.name} не отвечает → резервный")
                 }
             }
@@ -342,22 +366,35 @@ class VpnManager(
      * @param holdOnFailure при неудаче оставить туннель поднятым: трафик блокируется,
      *   а не уходит мимо VPN, пока ищется рабочий сервер.
      */
-    private suspend fun tryServer(s: ServerProfile, announce: Boolean, holdOnFailure: Boolean = false): Boolean {
+    private suspend fun tryServer(
+        s: ServerProfile,
+        announce: Boolean,
+        holdOnFailure: Boolean = false,
+        reuse: Boolean = false
+    ): Boolean {
         if (announce) _state.value = VpnState.Connecting
+        val plan = currentPlan()
         val cfg = try {
-            TunnelConfigFactory.build(s.config, currentPlan())
+            TunnelConfigFactory.build(s.config, plan)
         } catch (e: Exception) {
             log("Конфиг ${s.name}: ${e.message}")
             repo.recordFailure(s.id)
             return false
         }
+        val key = s.id to plan
         var handshake = false
-        for (attempt in 1..2) {
+        if (reuse && tunnelUp && loaded == key) {
+            // Туннель к этому серверу уже поднят и держит трафик: не пересоздаём VPN-интерфейс.
+            // WireGuard сам повторяет рукопожатие; годится и живая сессия (не старше 3 минут).
+            handshake = waitHandshake(10_000, maxAgeMs = SESSION_MAX_AGE_MS)
+        } else {
+          for (attempt in 1..2) {
             try {
                 withContext(Dispatchers.IO) {
                     backend.setState(tunnel, Tunnel.State.DOWN, null)
                     backend.setState(tunnel, Tunnel.State.UP, cfg)
                 }
+                loaded = key
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -371,6 +408,7 @@ class VpnManager(
             // уничтожение может выключить уже новый туннель. Это не вина сервера: поднимаем ещё раз.
             if (handshake || tunnelUp || attempt == 2) break
             log("${s.name}: Android остановил VPN-сервис при пересоздании туннеля — повторяю")
+          }
         }
         if (!handshake) {
             log("${s.name}: нет рукопожатия WireGuard")
@@ -417,7 +455,9 @@ class VpnManager(
         while (true) {
             delay(1000)
             tick++
-            if (!tunnelUp) return Reason.REVOKED
+            // Разрешение у другого VPN — значит, нас действительно отключили. Если разрешение
+            // всё ещё наше, туннель выключил запоздалый onDestroy сервиса GoBackend: поднимаем снова.
+            if (!tunnelUp) return if (VpnService.prepare(app) != null) Reason.REVOKED else Reason.TUNNEL_LOST
             if (networkEpoch.get() != epoch0) {
                 delay(1500) // даём сети устояться
                 return Reason.NETWORK_CHANGED
@@ -472,25 +512,28 @@ class VpnManager(
         return null
     }
 
-    /** Пауза перед повтором, которая прерывается, как только меняется сеть. */
-    private suspend fun waitOrNetworkChange(ms: Long) {
+    /** Пауза перед повтором, которая прерывается, как только меняется сеть. true — сеть сменилась. */
+    private suspend fun waitOrNetworkChange(ms: Long): Boolean {
         val epoch = networkEpoch.get()
         val end = SystemClock.elapsedRealtime() + ms
         while (SystemClock.elapsedRealtime() < end) {
             if (networkEpoch.get() != epoch) {
                 log("Сеть изменилась — повторяю сразу")
                 delay(1500)
-                return
+                return true
             }
             delay(250)
         }
+        return false
     }
 
-    private suspend fun waitHandshake(timeoutMs: Long): Boolean {
+    /** @param maxAgeMs для уже работавшего туннеля: рукопожатие должно быть не старше этого. */
+    private suspend fun waitHandshake(timeoutMs: Long, maxAgeMs: Long? = null): Boolean {
         val start = SystemClock.elapsedRealtime()
         var lastKick = 0L
         while (SystemClock.elapsedRealtime() - start < timeoutMs) {
-            if (handshakeEpoch(runCatching { backend.getStatistics(tunnel) }.getOrNull()) > 0) return true
+            val hs = handshakeEpoch(runCatching { backend.getStatistics(tunnel) }.getOrNull())
+            if (hs > 0 && (maxAgeMs == null || System.currentTimeMillis() - hs < maxAgeMs)) return true
             if (!tunnelUp) return false // туннель выключила система — ждать бессмысленно
             val now = SystemClock.elapsedRealtime()
             if (now - lastKick > 2000) {
@@ -516,6 +559,7 @@ class VpnManager(
             }
         }
         tunnelUp = false
+        loaded = null
     }
 
     // ---------- зонды ----------
@@ -676,5 +720,7 @@ class VpnManager(
 
     companion object {
         const val TUNNEL_NAME = "freevpn"
+        /** WireGuard не использует сессию старше 180 с (REJECT_AFTER_TIME). */
+        private const val SESSION_MAX_AGE_MS = 180_000L
     }
 }
