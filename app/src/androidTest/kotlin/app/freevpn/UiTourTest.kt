@@ -1,6 +1,6 @@
 package app.freevpn
 
-import android.content.Intent
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
@@ -36,18 +36,23 @@ class UiTourTest {
         app.repo.importText(E2E.conf("wgConf2") ?: conf)
     }
 
+    private var scenario: ActivityScenario<MainActivity>? = null
+
     @After fun tearDown() {
+        scenario?.close()
         runCatching { E2E.reset() }
     }
 
     private fun launch() {
-        val intent = Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        app.startActivity(intent)
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+        Thread.sleep(1500)
+        E2E.dismissSystemDialogs()
         assertNotNull("Главный экран не открылся", device.wait(Until.findObject(By.text("FreeVPN")), 15_000))
     }
 
     /** Пункт нижнего меню: подпись может быть объединена со значком («☷, Серверы»). */
     private fun tab(label: String): UiObject2 {
+        E2E.dismissSystemDialogs()
         val p = Pattern.compile("(?s).*$label")
         device.wait(Until.hasObject(By.text(p)), 10_000)
         return device.findObjects(By.text(p)).maxByOrNull { it.visibleBounds.top }
@@ -55,9 +60,12 @@ class UiTourTest {
     }
 
     /** contains = true для текста внутри кликабельных строк: Compose объединяет их подписи. */
-    private fun waitText(text: String, timeoutMs: Long = 10_000, contains: Boolean = false): UiObject2 =
-        device.wait(Until.findObject(if (contains) By.textContains(text) else By.text(text)), timeoutMs)
-            ?: throw AssertionError("Нет текста «$text» на экране")
+    private fun waitText(text: String, timeoutMs: Long = 10_000, contains: Boolean = false): UiObject2 {
+        val sel = if (contains) By.textContains(text) else By.text(text)
+        device.wait(Until.findObject(sel), timeoutMs)?.let { return it }
+        E2E.dismissSystemDialogs()
+        return device.wait(Until.findObject(sel), 5_000) ?: throw AssertionError("Нет текста «$text» на экране")
+    }
 
     @Test fun tourAllScreensWhileConnected() {
         launch()

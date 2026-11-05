@@ -8,6 +8,8 @@ import android.util.Base64
 import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
 import app.freevpn.core.RoutingMode
 import app.freevpn.vpn.VpnState
 import kotlinx.coroutines.flow.first
@@ -16,6 +18,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.fail
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.regex.Pattern
 
 /**
  * Общие помощники сквозных тестов.
@@ -45,7 +48,22 @@ object E2E {
         shell("appops set ${app.packageName} ACTIVATE_VPN allow")
     }
 
+    /**
+     * На медленном эмуляторе CI системный интерфейс иногда «не отвечает» и его диалог
+     * перекрывает экран. Это не ошибка приложения: нажимаем «Подождать».
+     */
+    fun dismissSystemDialogs() {
+        val device = UiDevice.getInstance(inst)
+        repeat(3) {
+            val wait = device.findObject(By.text(Pattern.compile("Wait|Подождать|Ждать")))
+                ?: return
+            wait.click()
+            Thread.sleep(700)
+        }
+    }
+
     fun screenshot(name: String) {
+        dismissSystemDialogs()
         shell("mkdir -p $SHOTS")
         shell("screencap -p $SHOTS/$name.png")
         Log.i(TAG, "SCREENSHOT $name")
@@ -134,10 +152,17 @@ object E2E {
      */
     fun vpnUidRanges(): List<LongRange> {
         val dump = shell("dumpsys connectivity")
-        val line = dump.lineSequence().firstOrNull { "Transports: VPN" in it && "Uids:" in it }
-            ?: fail("В dumpsys connectivity нет VPN-сети с Uids").let { "" }
+        // У VPN-сети Android добавляет транспорты нижележащей сети: «Transports: WIFI|VPN».
+        val vpnLine = Regex("Transports: [A-Z_|]*VPN")
+        val line = dump.lineSequence().firstOrNull { vpnLine.containsMatchIn(it) && Regex(" Uids?: ").containsMatchIn(it) }
+            ?: fail(
+                "В dumpsys connectivity нет VPN-сети с UID. Строки с VPN:\n" +
+                    dump.lineSequence().filter { "VPN" in it }.take(4).joinToString("\n") { it.take(700) }
+            ).let { "" }
+        // Один UID печатается как « Uid: 10192», несколько — как « Uids: <{0-10191, 10193-99999}>».
+        Regex(" Uid: (\\d+)").find(line)?.let { val u = it.groupValues[1].toLong(); return listOf(u..u) }
         val body = Regex("Uids: <\\{([^}]*)\\}>").find(line)?.groupValues?.get(1)
-            ?: fail("Не удалось разобрать Uids в строке: ${line.take(400)}").let { "" }
+            ?: fail("Не удалось разобрать Uids в строке: ${line.take(700)}").let { "" }
         return body.split(",").map { it.trim() }.filter { it.isNotEmpty() }.map { part ->
             val m = Regex("(\\d+)(?:-(\\d+))?").matchEntire(part) ?: error("Непонятный диапазон: $part")
             val a = m.groupValues[1].toLong()

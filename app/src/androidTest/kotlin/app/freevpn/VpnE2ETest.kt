@@ -179,9 +179,11 @@ class VpnE2ETest {
     @Test fun t5_splitTunneling_appliedBySystem() {
         val own = app.applicationInfo.uid.toLong()
         val pm = app.packageManager
-        val launcher = InstalledApps.launcherPackages(pm) - app.packageName
-        val bypass = listOf("com.android.settings", "com.android.chrome", "com.google.android.youtube")
-            .firstOrNull { it in launcher } ?: launcher.first()
+        // Обычное приложение со своим UID (не системное: у «Настроек» общий UID 1000).
+        val launcher = (InstalledApps.launcherPackages(pm) - app.packageName)
+            .filter { pm.getApplicationInfo(it, 0).uid >= 10_000 }
+        val bypass = listOf("com.android.chrome", "com.google.android.youtube", "com.google.android.gm")
+            .firstOrNull { it in launcher } ?: launcher.sorted().first()
         val bypassUid = pm.getApplicationInfo(bypass, 0).uid.toLong()
         Log.i(TAG, "Исключаем $bypass (uid $bypassUid), наш uid $own")
 

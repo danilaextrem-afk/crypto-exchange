@@ -6,6 +6,9 @@ set -uo pipefail
 OUT="${E2E_OUT:-e2e-out}"
 mkdir -p "$OUT"
 adb logcat -c || true
+# Медленный эмулятор CI показывает «System UI isn't responding» поверх экрана — отключаем такие диалоги.
+adb shell settings put global hide_error_dialogs 1 || true
+adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >/dev/null 2>&1 || true
 
 # 1. Хост выполняет команды теста: остановить/запустить сервер (тест «сервер упал»).
 (
@@ -55,7 +58,7 @@ if [ -f FreeVPN.apk ]; then
   adb pull /data/local/tmp/release-home.png "$OUT/screens/20-release-home.png" || true
   PID="$(adb shell pidof app.freevpn | tr -d '\r')"
   adb logcat -d > "$OUT/logcat-release.txt"
-  if [ -z "$PID" ] || grep -q "FATAL EXCEPTION" "$OUT/logcat-release.txt"; then
+  if [ -z "$PID" ] || grep -A2 "FATAL EXCEPTION" "$OUT/logcat-release.txt" | grep -q "Process: app.freevpn"; then
     echo "::error::release-APK упал при запуске"
     RC=1
   else
