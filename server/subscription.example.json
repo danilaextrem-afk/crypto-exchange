@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "name": "Мой сервер (пример)",
+      "country": "DE",
+      "load": 10,
+      "config": "[Interface]\nPrivateKey = ЗАМЕНИТЕ\nAddress = 10.8.0.2/32\nDNS = 1.1.1.1, 9.9.9.9\n\n[Peer]\nPublicKey = ЗАМЕНИТЕ\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 203.0.113.7:51820\nPersistentKeepalive = 25"
+    }
+  ]
+}
