@@ -333,9 +333,18 @@ class VpnManager(
             if (!holdOnFailure) withContext(NonCancellable) { bringDown() }
             return false
         }
+        // Android применяет маршруты VPN асинхронно. Пока VPN не стал сетью по умолчанию
+        // для приложения, проверочный запрос мог бы уйти напрямую и дать ложное «Подключено».
+        val vpnNet = awaitTunnelNetwork(5_000)
+        if (vpnNet == null) {
+            log("${s.name}: Android не направил трафик в VPN")
+            repo.recordFailure(s.id)
+            if (!holdOnFailure) withContext(NonCancellable) { bringDown() }
+            return false
+        }
         var rtt: Long? = null
         for (i in 1..3) {
-            rtt = probeRtt()
+            rtt = probeRtt(vpnNet)
             if (rtt != null) break
             delay(500)
         }
@@ -374,7 +383,8 @@ class VpnManager(
                 _live.update { it.copy(rxBps = rx, txBps = tx, totalRx = st.totalRx(), totalTx = st.totalTx()) }
             }
             if (tick % 5 == 0) {
-                val rtt = probeRtt()
+                // Зонд привязан к VPN-сети: если её нет, это сбой, а не «успех напрямую».
+                val rtt = tunnelNetwork()?.let { probeRtt(it) }
                 window.addLast(rtt != null)
                 if (window.size > 20) window.removeFirst()
                 val loss = window.count { !it } * 100 / window.size
@@ -398,6 +408,23 @@ class VpnManager(
         val end = SystemClock.elapsedRealtime() + maxMs
         while (networks.isEmpty() && SystemClock.elapsedRealtime() < end) delay(500)
         if (networks.isNotEmpty()) delay(1000) // даём сети устояться
+    }
+
+    /** VPN-сеть, зарегистрированная Android (у приложения может быть только одна). */
+    @Suppress("DEPRECATION")
+    private fun tunnelNetwork(): Network? = cm.allNetworks.firstOrNull {
+        cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+    }
+
+    /** Ждёт, пока VPN станет сетью по умолчанию для этого приложения. */
+    private suspend fun awaitTunnelNetwork(timeoutMs: Long): Network? {
+        val end = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < end) {
+            val n = tunnelNetwork()
+            if (n != null && cm.activeNetwork == n) return n
+            delay(200)
+        }
+        return null
     }
 
     /** Пауза перед повтором, которая прерывается, как только меняется сеть. */
@@ -447,10 +474,11 @@ class VpnManager(
 
     // ---------- зонды ----------
 
-    private suspend fun tcpRtt(host: String, port: Int = 443, timeoutMs: Int = 2500): Long? =
+    private suspend fun tcpRtt(host: String, port: Int = 443, timeoutMs: Int = 2500, via: Network? = null): Long? =
         withContext(Dispatchers.IO) {
             try {
                 Socket().use { s ->
+                    via?.bindSocket(s)
                     val t0 = SystemClock.elapsedRealtime()
                     s.connect(InetSocketAddress(InetAddress.getByName(host), port), timeoutMs)
                     SystemClock.elapsedRealtime() - t0
@@ -461,7 +489,8 @@ class VpnManager(
         }
 
     /** Задержка = время TCP-подключения к публичному anycast-адресу через туннель. */
-    private suspend fun probeRtt(): Long? = tcpRtt("1.1.1.1") ?: tcpRtt("8.8.8.8")
+    private suspend fun probeRtt(via: Network? = null): Long? =
+        tcpRtt("1.1.1.1", via = via) ?: tcpRtt("8.8.8.8", via = via)
 
     private suspend fun quickDownMbps(bytes: Int = 2_000_000): Double? = withContext(Dispatchers.IO) {
         try {
