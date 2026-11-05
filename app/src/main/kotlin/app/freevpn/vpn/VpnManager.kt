@@ -7,6 +7,9 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import app.freevpn.core.Backoff
 import app.freevpn.core.HealthTracker
@@ -51,6 +54,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 sealed interface VpnState {
     data object Disconnected : VpnState
@@ -114,22 +118,55 @@ class VpnManager(
     private val networkEpoch = AtomicInteger(0)
     private val networks = ConcurrentHashMap.newKeySet<Network>()
     private val cm = app.getSystemService(ConnectivityManager::class.java)
+    /** Физическая сеть, через которую реально идёт трафик (не VPN). */
+    private val primary = AtomicReference<Network?>(null)
 
     init {
-        // Следим за физическими сетями (Wi-Fi / мобильная). Любое изменение набора сетей
-        // приводит к быстрому пересозданию туннеля, чтобы сокеты привязались к новой сети.
+        // Следим за физическими сетями (Wi-Fi / мобильная; VPN исключён запросом по умолчанию).
+        // Туннель пересоздаётся только когда меняется ОСНОВНАЯ сеть. Раньше реагировали на любую:
+        // при включённых одновременно Wi-Fi и мобильных данных появление/пропадание второй сети
+        // без причины рвало соединение.
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
         cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (networks.add(network)) networkEpoch.incrementAndGet()
+                networks.add(network)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) choosePrimaryByTransport()
             }
 
             override fun onLost(network: Network) {
-                if (networks.remove(network)) networkEpoch.incrementAndGet()
+                networks.remove(network)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) choosePrimaryByTransport()
             }
         })
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+: система сама сообщает лучшую (основную) физическую сеть.
+            cm.registerBestMatchingNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) = setPrimary(network)
+                override fun onLost(network: Network) {
+                    if (primary.get() == network) setPrimary(null)
+                }
+            }, Handler(Looper.getMainLooper()))
+        }
+    }
+
+    private fun setPrimary(n: Network?) {
+        if (primary.getAndSet(n) != n) networkEpoch.incrementAndGet()
+    }
+
+    /** Android 8–11: основная сеть — Wi-Fi, если есть, затем Ethernet, затем мобильная. */
+    private fun choosePrimaryByTransport() {
+        fun rank(n: Network): Int {
+            val c = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: return 0
+            return when {
+                c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 3
+                c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 2
+                c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 1
+                else -> 0
+            }
+        }
+        setPrimary(networks.maxByOrNull { rank(it) })
     }
 
     // ---------- публичный API ----------
@@ -314,20 +351,28 @@ class VpnManager(
             repo.recordFailure(s.id)
             return false
         }
-        try {
-            withContext(Dispatchers.IO) {
-                backend.setState(tunnel, Tunnel.State.DOWN, null)
-                backend.setState(tunnel, Tunnel.State.UP, cfg)
+        var handshake = false
+        for (attempt in 1..2) {
+            try {
+                withContext(Dispatchers.IO) {
+                    backend.setState(tunnel, Tunnel.State.DOWN, null)
+                    backend.setState(tunnel, Tunnel.State.UP, cfg)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("Не удалось поднять туннель ${s.name}: ${e.message}")
+                repo.recordFailure(s.id)
+                withContext(NonCancellable) { bringDown() }
+                return false
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            log("Не удалось поднять туннель ${s.name}: ${e.message}")
-            repo.recordFailure(s.id)
-            withContext(NonCancellable) { bringDown() }
-            return false
+            handshake = waitHandshake(10_000)
+            // При пересоздании туннеля GoBackend останавливает свой VPN-сервис, и его запоздалое
+            // уничтожение может выключить уже новый туннель. Это не вина сервера: поднимаем ещё раз.
+            if (handshake || tunnelUp || attempt == 2) break
+            log("${s.name}: Android остановил VPN-сервис при пересоздании туннеля — повторяю")
         }
-        if (!waitHandshake(10_000)) {
+        if (!handshake) {
             log("${s.name}: нет рукопожатия WireGuard")
             repo.recordFailure(s.id)
             if (!holdOnFailure) withContext(NonCancellable) { bringDown() }
@@ -446,6 +491,7 @@ class VpnManager(
         var lastKick = 0L
         while (SystemClock.elapsedRealtime() - start < timeoutMs) {
             if (handshakeEpoch(runCatching { backend.getStatistics(tunnel) }.getOrNull()) > 0) return true
+            if (!tunnelUp) return false // туннель выключила система — ждать бессмысленно
             val now = SystemClock.elapsedRealtime()
             if (now - lastKick > 2000) {
                 lastKick = now
@@ -516,9 +562,15 @@ class VpnManager(
         val out = ArrayList<DiagLine>()
         val st = _state.value
         val connected = st as? VpnState.Connected
+        val vpnOff = st is VpnState.Disconnected || st is VpnState.Failed
         out += DiagLine(
             "Туннель",
-            connected?.let { "Активен: ${it.server.name}" } ?: "Не подключён (проверки идут по обычной сети)",
+            when {
+                connected != null -> "Активен: ${connected.server.name}"
+                // Во время переподключения туннель может быть поднят и блокировать трафик.
+                !vpnOff -> "Переподключение — результаты проверок ниже могут быть неполными"
+                else -> "Не подключён (проверки идут по обычной сети)"
+            },
             if (connected != null) 0 else 1
         )
         out += DiagLine("Режим маршрутизации", prefs.mode.title, 3)
@@ -553,7 +605,7 @@ class VpnManager(
         val endpoint = connected?.server?.endpointHost
         out += when {
             ip == null -> DiagLine("Внешний IP", "не удалось определить", 1)
-            connected == null -> DiagLine("Внешний IP", "$ip (VPN выключен)", 3)
+            connected == null -> DiagLine("Внешний IP", if (vpnOff) "$ip (VPN выключен)" else "$ip (идёт переподключение)", 3)
             endpoint != null && endpoint == ip -> DiagLine("Внешний IP", "$ip — совпадает с сервером", 0)
             else -> DiagLine(
                 "Внешний IP",
