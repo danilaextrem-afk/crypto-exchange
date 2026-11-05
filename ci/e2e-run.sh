@@ -27,9 +27,14 @@ sudo tcpdump -i any -n -U -w "$OUT/dns-from-tunnel.pcap" \
 TCPDUMP=$!
 
 # 3. Сквозные тесты (debug-сборка с инструментацией).
+# Конфиги Proton приходят из секрета PROTON_CONFS (если он задан) и не пишутся на диск.
+EXTRA=()
+[ -n "${PROTON_CONFS:-}" ] && EXTRA+=(-Pandroid.testInstrumentationRunnerArguments.protonConfs="$PROTON_CONFS")
+[ -n "${ONLY_CLASS:-}" ] && EXTRA+=(-Pandroid.testInstrumentationRunnerArguments.class="$ONLY_CLASS")
 ./gradlew --no-daemon :app:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.wgConf1="$(cat "$RUNNER_TEMP/c1.b64")" \
-  -Pandroid.testInstrumentationRunnerArguments.wgConf2="$(cat "$RUNNER_TEMP/c2.b64")"
+  -Pandroid.testInstrumentationRunnerArguments.wgConf2="$(cat "$RUNNER_TEMP/c2.b64")" \
+  "${EXTRA[@]}"
 RC=$?
 
 sleep 2
