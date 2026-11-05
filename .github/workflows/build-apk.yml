@@ -2,8 +2,11 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    # freevpn — основная ветка репозитория; без неё пуши не собирались.
+    branches: [main, freevpn]
     tags: ["v*"]
+  pull_request:
+    branches: [main, freevpn]
   workflow_dispatch:
 
 permissions:
