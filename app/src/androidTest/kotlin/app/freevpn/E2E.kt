@@ -69,6 +69,14 @@ object E2E {
         Log.i(TAG, "SCREENSHOT $name")
     }
 
+    /** Снимок с открытым приложением (главный экран). */
+    fun screenshotApp(name: String) {
+        androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use {
+            Thread.sleep(2500)
+            screenshot(name)
+        }
+    }
+
     /** Сигнал машине сборки (её скрипт читает logcat): STOP_SERVER / START_SERVER. */
     fun signalHost(command: String) {
         Log.i(TAG, command)

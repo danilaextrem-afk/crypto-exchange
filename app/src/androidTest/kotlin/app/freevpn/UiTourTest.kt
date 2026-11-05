@@ -85,7 +85,8 @@ class UiTourTest {
         waitText("Российские приложения напрямую", contains = true)
         E2E.screenshot("13-routes")
 
-        tab("Диагностика").click()
+        tab("Проверка").click()
+        waitText("Диагностика")
         waitText("Запустить проверку").click()
         waitText("Выполняется…", 5_000)
         waitText("Запустить проверку", 120_000) // проверка закончилась

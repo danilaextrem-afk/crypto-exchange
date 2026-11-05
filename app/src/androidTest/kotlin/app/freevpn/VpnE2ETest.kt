@@ -3,7 +3,6 @@ package app.freevpn
 import android.net.ConnectivityManager
 import android.net.VpnService
 import android.util.Log
-import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.freevpn.E2E.TAG
 import app.freevpn.E2E.TRACE
@@ -87,10 +86,7 @@ class VpnE2ETest {
         // Живая статистика туннеля идёт.
         awaitTrue(20_000, "счётчики трафика туннеля") { app.vpn.live.value.totalRx > 0 && app.vpn.live.value.pingMs != null }
 
-        ActivityScenario.launch(MainActivity::class.java).use {
-            Thread.sleep(2500)
-            E2E.screenshot("01-home-connected")
-        }
+        E2E.screenshotApp("01-home-connected")
 
         app.vpn.disconnect()
         awaitState(30_000, "отключение") { it is VpnState.Disconnected }
@@ -138,7 +134,7 @@ class VpnE2ETest {
             connected(90_000)
             assertTrue(activeIsVpn())
             assertNotNull("Нет интернета через туннель по мобильной сети", fetch(TRACE))
-            E2E.screenshot("02-home-after-wifi-off")
+            E2E.screenshotApp("02-home-after-wifi-off")
         } else {
             Log.i(TAG, "В эмуляторе нет мобильной сети — проверяем только возврат Wi-Fi")
         }
@@ -169,7 +165,7 @@ class VpnE2ETest {
         // Главное: пока серверов нет, трафик НЕ уходит напрямую через оператора.
         assertTrue("VPN-сеть исчезла — трафик пошёл бы мимо туннеля", activeIsVpn())
         assertNull("Запрос прошёл, хотя сервер недоступен: утечка мимо VPN", fetch(TRACE, 5000))
-        E2E.screenshot("03-home-servers-down")
+        E2E.screenshotApp("03-home-servers-down")
 
         E2E.signalHost("START_SERVER")
         connected(180_000)
