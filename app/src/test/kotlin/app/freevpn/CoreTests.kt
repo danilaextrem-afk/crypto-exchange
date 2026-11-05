@@ -7,6 +7,7 @@ import app.freevpn.core.RoutingPlanner
 import app.freevpn.core.ServerProfile
 import app.freevpn.core.ServerScorer
 import app.freevpn.core.ServerStats
+import app.freevpn.core.SessionPolicy
 import app.freevpn.core.SpeedMeter
 import app.freevpn.core.SplitPlan
 import app.freevpn.core.SubscriptionParser
@@ -102,6 +103,15 @@ class ScorerTest {
         val stats = mapOf("a" to ServerStats(latencyMs = 10.0, lastTestedEpoch = now), "b" to ServerStats(latencyMs = 20.0, lastTestedEpoch = now), "c" to ServerStats(latencyMs = 30.0, lastTestedEpoch = now))
         val order = ServerScorer.order(listOf(srv("a"), srv("b"), srv("c")), stats, now, preferredId = "c", avoid = setOf("a")).map { it.id }
         assertEquals(listOf("c", "b", "a"), order)
+    }
+
+    @Test fun tunnelIsHeldOnceConnectedOrStartedBySystem() {
+        // Первая ручная попытка без успеха: туннель опускаем и показываем ошибку.
+        assertFalse(SessionPolicy.holdTunnelOnFailure(everConnected = false, persistent = false))
+        // Обрыв после подключения: туннель держим, трафик не уходит мимо VPN.
+        assertTrue(SessionPolicy.holdTunnelOnFailure(everConnected = true, persistent = false))
+        // Запуск системой («Постоянный VPN»): держим даже до первого успеха.
+        assertTrue(SessionPolicy.holdTunnelOnFailure(everConnected = false, persistent = true))
     }
 
     @Test fun backoffGrowsAndCaps() {

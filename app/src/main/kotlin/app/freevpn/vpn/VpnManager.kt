@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.VpnService
 import android.os.SystemClock
 import app.freevpn.core.Backoff
 import app.freevpn.core.HealthTracker
@@ -13,6 +14,7 @@ import app.freevpn.core.RoutingMode
 import app.freevpn.core.RoutingPlanner
 import app.freevpn.core.ServerProfile
 import app.freevpn.core.ServerScorer
+import app.freevpn.core.SessionPolicy
 import app.freevpn.core.SpeedMeter
 import app.freevpn.core.SplitPlan
 import app.freevpn.core.Verdict
@@ -138,14 +140,30 @@ class VpnManager(
         prefs.mode, installedLauncherPackages(), prefs.vpnApps, prefs.directApps, app.packageName
     )
 
-    fun connect(preferredId: String? = prefs.selectedServerId) {
+    /**
+     * @param persistent true — не сдаваться, если серверы не отвечают с первой попытки
+     *   (запуск системой «Постоянный VPN», например сразу после перезагрузки, когда сети ещё нет).
+     */
+    fun connect(preferredId: String? = prefs.selectedServerId, persistent: Boolean = false) {
         benchJob?.cancel()
         val prev = session
         session = scope.launch {
             prev?.cancelAndJoin()
             benchJob?.cancelAndJoin()
-            runSession(preferredId)
+            runSession(preferredId, persistent)
         }
+    }
+
+    /**
+     * Android запустил VPN-сервис сам (включён «Постоянный VPN»): после перезагрузки,
+     * после остановки процесса или при включении настройки. Без этого туннель не
+     * поднимался, а при «Блокировать соединения без VPN» интернет пропадал совсем.
+     */
+    fun onAlwaysOnStart() {
+        val s = _state.value
+        if (s is VpnState.Connected || s is VpnState.Connecting || s is VpnState.Reconnecting) return
+        log("Запуск системой («Постоянный VPN»)")
+        connect(persistent = true)
     }
 
     fun disconnect() {
@@ -195,7 +213,7 @@ class VpnManager(
 
     private enum class Reason { NETWORK_CHANGED, UNHEALTHY, REVOKED }
 
-    private suspend fun runSession(preferredId: String?) {
+    private suspend fun runSession(preferredId: String?, persistent: Boolean) {
         _state.value = VpnState.Connecting
         _live.value = LiveStats()
         var everConnected = false
@@ -205,28 +223,47 @@ class VpnManager(
         log("Подключение…")
 
         while (currentCoroutineContext().isActive) {
+            // Разрешение могло пропасть (включили другой VPN). Без него GoBackend всё равно
+            // не поднимет туннель, а серверы получили бы ложные «сбои».
+            if (VpnService.prepare(app) != null) {
+                withContext(NonCancellable) { bringDown() }
+                _state.value = VpnState.Failed(
+                    if (everConnected) "VPN остановлен системой или другим VPN-приложением"
+                    else "Нет разрешения на VPN: нажмите кнопку и подтвердите запрос Android"
+                )
+                _live.value = LiveStats()
+                log("Нет разрешения на VPN")
+                return
+            }
             val servers = repo.servers.value
             if (servers.isEmpty()) {
+                withContext(NonCancellable) { bringDown() }
                 _state.value = VpnState.Failed("Нет серверов. Добавьте конфигурацию или подписку.")
                 return
             }
+            val hold = SessionPolicy.holdTunnelOnFailure(everConnected, persistent)
+            awaitNetwork()
             val ordered = orderServers(servers, prefer, avoid)
             var connected: ServerProfile? = null
             for (s in ordered) {
-                if (tryServer(s, announce = everConnected.not())) { connected = s; break }
+                if (tryServer(s, announce = everConnected.not(), holdOnFailure = hold)) { connected = s; break }
             }
 
             if (connected == null) {
-                withContext(NonCancellable) { bringDown() }
-                if (!everConnected) {
+                if (!hold) {
+                    withContext(NonCancellable) { bringDown() }
                     _state.value = VpnState.Failed("Ни один сервер не ответил. Проверьте конфигурацию и интернет.")
                     log("Все серверы недоступны")
                     return
                 }
                 attempt++
                 val wait = Backoff.seconds(attempt)
-                _state.value = VpnState.Reconnecting("Нет связи с серверами, повтор через $wait с")
-                delay(wait * 1000L)
+                _state.value = VpnState.Reconnecting(
+                    if (tunnelUp) "Серверы не отвечают. Трафик заблокирован до восстановления, повтор через $wait с"
+                    else "Нет связи с серверами, повтор через $wait с"
+                )
+                log("Все серверы недоступны, повтор через $wait с" + if (tunnelUp) " (трафик заблокирован)" else "")
+                waitOrNetworkChange(wait * 1000L)
                 avoid = emptySet()
                 continue
             }
@@ -263,8 +300,12 @@ class VpnManager(
         return ServerScorer.order(servers, repo.stats.value, now, preferred, avoid)
     }
 
-    /** Поднимает туннель на сервере и убеждается, что трафик реально ходит. */
-    private suspend fun tryServer(s: ServerProfile, announce: Boolean): Boolean {
+    /**
+     * Поднимает туннель на сервере и убеждается, что трафик реально ходит.
+     * @param holdOnFailure при неудаче оставить туннель поднятым: трафик блокируется,
+     *   а не уходит мимо VPN, пока ищется рабочий сервер.
+     */
+    private suspend fun tryServer(s: ServerProfile, announce: Boolean, holdOnFailure: Boolean = false): Boolean {
         if (announce) _state.value = VpnState.Connecting
         val cfg = try {
             TunnelConfigFactory.build(s.config, currentPlan())
@@ -289,7 +330,7 @@ class VpnManager(
         if (!waitHandshake(10_000)) {
             log("${s.name}: нет рукопожатия WireGuard")
             repo.recordFailure(s.id)
-            withContext(NonCancellable) { bringDown() }
+            if (!holdOnFailure) withContext(NonCancellable) { bringDown() }
             return false
         }
         var rtt: Long? = null
@@ -301,7 +342,7 @@ class VpnManager(
         if (rtt == null) {
             log("${s.name}: туннель поднят, но интернет через него не работает")
             repo.recordFailure(s.id)
-            withContext(NonCancellable) { bringDown() }
+            if (!holdOnFailure) withContext(NonCancellable) { bringDown() }
             return false
         }
         repo.recordSuccess(s.id, rtt)
@@ -342,6 +383,34 @@ class VpnManager(
                 if (tick % 60 == 0) repo.recordLoss(server.id, loss.toDouble())
                 if (health.record(rtt != null) == Verdict.DEAD) return Reason.UNHEALTHY
             }
+        }
+    }
+
+    /**
+     * Ждёт появления физической сети (Wi-Fi или мобильной), но не дольше maxMs:
+     * сразу после загрузки телефона сети ещё нет, и попытки только копили бы «сбои» серверов.
+     */
+    private suspend fun awaitNetwork(maxMs: Long = 20_000) {
+        if (networks.isNotEmpty()) return
+        val before = _state.value
+        if (before !is VpnState.Connected) _state.value = VpnState.Reconnecting("Нет подключения к интернету, жду сеть…")
+        log("Нет сети — жду подключения")
+        val end = SystemClock.elapsedRealtime() + maxMs
+        while (networks.isEmpty() && SystemClock.elapsedRealtime() < end) delay(500)
+        if (networks.isNotEmpty()) delay(1000) // даём сети устояться
+    }
+
+    /** Пауза перед повтором, которая прерывается, как только меняется сеть. */
+    private suspend fun waitOrNetworkChange(ms: Long) {
+        val epoch = networkEpoch.get()
+        val end = SystemClock.elapsedRealtime() + ms
+        while (SystemClock.elapsedRealtime() < end) {
+            if (networkEpoch.get() != epoch) {
+                log("Сеть изменилась — повторяю сразу")
+                delay(1500)
+                return
+            }
+            delay(250)
         }
     }
 
