@@ -1,6 +1,7 @@
 package app.freevpn.ui
 
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.freevpn.FreeVpnApp
+import app.freevpn.core.Provider
 import app.freevpn.core.readUpTo
 import app.freevpn.vpn.VpnState
 import kotlinx.coroutines.launch
@@ -56,17 +58,31 @@ fun ServersScreen(app: FreeVpnApp) {
     var showAdd by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
 
-    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri != null) {
+    // Можно выбрать сразу несколько .conf (например, конфиги Proton для разных стран).
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        var added = 0
+        val errors = ArrayList<String>()
+        for (uri in uris) {
+            val name = runCatching {
+                ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                }
+            }.getOrNull()
             try {
                 val text = ctx.contentResolver.openInputStream(uri)!!.use { it.readUpTo(512 * 1024).toString(Charsets.UTF_8) }
-                val n = app.repo.importText(text)
-                Toast.makeText(ctx, "Добавлено серверов: $n", Toast.LENGTH_SHORT).show()
+                added += app.repo.importText(text, fileName = name)
             } catch (e: Exception) {
-                Toast.makeText(ctx, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
+                errors += "${name ?: "файл"}: ${e.message}"
             }
         }
+        val msg = buildString {
+            append("Добавлено серверов: $added")
+            if (errors.isNotEmpty()) append("\nОшибки:\n").append(errors.joinToString("\n"))
+        }
+        Toast.makeText(ctx, msg, if (errors.isEmpty()) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
     }
+    var showGuide by remember { mutableStateOf(false) }
 
     val idle = state is VpnState.Disconnected || state is VpnState.Failed
 
@@ -103,6 +119,9 @@ fun ServersScreen(app: FreeVpnApp) {
                 }
             }) { Text(if (refreshing) "…" else "Подписка") }
         }
+        TextButton(onClick = { showGuide = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+            Text("Бесплатные серверы: как получить", color = Accent)
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(enabled = idle && !bench.running && servers.isNotEmpty(), onClick = { app.vpn.benchmark() }) {
                 Text("Измерить все")
@@ -118,11 +137,21 @@ fun ServersScreen(app: FreeVpnApp) {
         if (servers.isEmpty()) {
             Panel(Modifier.fillMaxWidth()) {
                 Text(
-                    "Серверов пока нет. Нажмите «Добавить» и вставьте конфиг WireGuard (.conf) " +
-                        "либо укажите адрес подписки в «Ещё». Инструкция по своему серверу — в README.",
+                    "Серверов пока нет. Встроенных серверов в приложении нет — подключение идёт только к тем, " +
+                        "что вы добавите. Бесплатный вариант — Proton VPN Free: нажмите «Бесплатные серверы: как получить». " +
+                        "Также подходит конфиг WireGuard (.conf) своего сервера или адрес подписки в «Ещё».",
                     color = TextLo
                 )
             }
+        }
+
+        // Честно показываем ограничения бесплатных тарифов добавленных провайдеров.
+        servers.mapNotNull { Provider.byId(it.provider) }.distinct().mapNotNull { p -> p.limits?.let { p.title to it } }.forEach { (title, limits) ->
+            Panel(Modifier.fillMaxWidth()) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(limits, style = MaterialTheme.typography.bodyMedium, color = TextLo)
+            }
+            Spacer(Modifier.height(8.dp))
         }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -143,6 +172,7 @@ fun ServersScreen(app: FreeVpnApp) {
                         Column(Modifier.weight(1f)) {
                             Text(s.name, style = MaterialTheme.typography.titleMedium)
                             val parts = buildList {
+                                Provider.byId(s.provider)?.let { add(it.title) }
                                 add(st?.latencyMs?.let { "${it.toInt()} мс" } ?: "не измерен")
                                 st?.downMbps?.let { add("↓ ${"%.0f".format(it)} Мбит/с") }
                                 if ((st?.lossPercent ?: 0.0) > 0.5) add("потери ${"%.0f".format(st!!.lossPercent)}%")
@@ -165,6 +195,37 @@ fun ServersScreen(app: FreeVpnApp) {
                 }
             }
         }
+    }
+
+    if (showGuide) {
+        AlertDialog(
+            onDismissRequest = { showGuide = false },
+            title = { Text("Бесплатные серверы Proton VPN") },
+            text = {
+                LazyColumn {
+                    item {
+                        Text(
+                            "Proton VPN разрешает подключаться к своим серверам любым WireGuard-клиентом, " +
+                                "в том числе на бесплатном тарифе. Нужен ваш бесплатный аккаунт Proton (без карты).\n\n" +
+                                "1. В браузере телефона откройте account.protonvpn.com и создайте бесплатный аккаунт (тариф Free).\n" +
+                                "2. Откройте раздел Downloads → WireGuard configuration.\n" +
+                                "3. Задайте имя устройства, платформа — Android.\n" +
+                                "4. В списке серверов выберите бесплатный (с пометкой FREE) и нажмите Create, затем Download.\n" +
+                                "5. Повторите для 2–3 серверов разных стран — это резервные серверы для автопереключения.\n" +
+                                "6. Здесь нажмите «Файл» и выберите все скачанные .conf.\n\n" +
+                                "Ограничения бесплатного тарифа: одно подключение на аккаунт одновременно " +
+                                "(не включайте Proton на другом устройстве), около 8 стран, скорость не гарантируется. " +
+                                "Список серверов сам не обновляется: Proton не даёт открытого API для этого, " +
+                                "новые серверы — новыми конфигами из вашего аккаунта. " +
+                                "В России WireGuard может блокироваться оператором — тогда соединение не установится, " +
+                                "и приложение честно покажет ошибку. Условия задаёт Proton и может их изменить.",
+                            color = TextLo
+                        )
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showGuide = false }) { Text("Понятно") } }
+        )
     }
 
     if (showAdd) {

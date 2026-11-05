@@ -30,8 +30,8 @@ class ServerRepository(private val prefs: Prefs) {
     // ---------- серверы ----------
 
     /** Добавляет серверы из текста (конфиг или JSON). Возвращает число добавленных/обновлённых. */
-    fun importText(text: String, source: String = "local"): Int {
-        val parsed = SubscriptionParser.parse(text, source)
+    fun importText(text: String, source: String = "local", fileName: String? = null): Int {
+        val parsed = SubscriptionParser.parse(text, source, fileName)
         val map = LinkedHashMap(_servers.value.associateBy { it.id })
         parsed.forEach { map[it.id] = it }
         saveServers(map.values.toList())
@@ -135,6 +135,7 @@ class ServerRepository(private val prefs: Prefs) {
                 JSONObject()
                     .put("id", it.id).put("name", it.name).put("country", it.country)
                     .put("config", it.config).put("load", it.load ?: -1).put("source", it.source)
+                    .put("provider", it.provider ?: JSONObject.NULL)
             )
         }
         prefs.serversJson = arr.toString()
@@ -146,7 +147,8 @@ class ServerRepository(private val prefs: Prefs) {
             val o = arr.getJSONObject(it)
             ServerProfile(
                 o.getString("id"), o.getString("name"), o.getString("country"), o.getString("config"),
-                o.optInt("load", -1).takeIf { l -> l >= 0 }, o.optString("source", "local")
+                o.optInt("load", -1).takeIf { l -> l >= 0 }, o.optString("source", "local"),
+                if (o.isNull("provider")) null else o.optString("provider").ifBlank { null }
             )
         }
     } catch (e: Exception) {

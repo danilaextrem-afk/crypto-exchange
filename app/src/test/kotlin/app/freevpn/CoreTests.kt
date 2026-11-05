@@ -14,6 +14,7 @@ import app.freevpn.core.SubscriptionParser
 import app.freevpn.core.Verdict
 import app.freevpn.vpn.TunnelConfigFactory
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -32,6 +33,22 @@ Address = 10.8.0.2/32
 PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
 AllowedIPs = 10.8.0.0/24
 Endpoint = 203.0.113.7:51820
+"""
+
+// Формат конфига Proton VPN (ключи и адрес — тестовые, из документационных диапазонов).
+private const val PROTON_CONF = """
+[Interface]
+# Key for phone
+# VPN Accelerator = on
+PrivateKey = YAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+Address = 10.2.0.2/32
+DNS = 10.2.0.1
+
+[Peer]
+# NL-FREE#187118
+PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+AllowedIPs = 0.0.0.0/0
+Endpoint = 198.51.100.20:51820
 """
 
 class RoutingPlannerTest {
@@ -163,6 +180,25 @@ class SubscriptionParserTest {
         assertEquals("Frankfurt", s.name)
         assertEquals(12, s.load)
         assertEquals("sub", s.source)
+    }
+
+    @Test fun recognisesProtonFreeConfig() {
+        val s = SubscriptionParser.parse(PROTON_CONF).single()
+        assertEquals("proton-free", s.provider)
+        assertEquals("NL", s.country)
+        assertEquals("Proton NL-FREE #187118", s.name)
+    }
+
+    @Test fun protonNameFromFileWhenNoComment() {
+        val conf = PROTON_CONF.replace("# NL-FREE#187118\n", "")
+        val s = SubscriptionParser.parse(conf, fileName = "phone-JP-FREE-12.conf").single()
+        assertEquals("proton-free", s.provider)
+        assertEquals("JP", s.country)
+    }
+
+    @Test fun paidProtonAndOtherConfigsAreNotMarkedFree() {
+        assertEquals("proton", SubscriptionParser.parse(PROTON_CONF.replace("NL-FREE#187118", "CH#5")).single().provider)
+        assertNull(SubscriptionParser.parse(CONF).single().provider)
     }
 
     @Test fun rejectsGarbageAndIncompleteConfigs() {
