@@ -42,6 +42,19 @@ object Backoff {
         min(30.0, 2.0.pow((attempt - 1).coerceIn(0, 10))).toInt()
 }
 
+/**
+ * Что делать, когда ни один сервер не ответил.
+ *
+ * Если VPN уже был подключён (или запущен системой как «Постоянный VPN»), туннель
+ * НЕ опускается: трафик остаётся заблокированным внутри неработающего туннеля, а не
+ * уходит напрямую через оператора. Опускаем туннель и показываем ошибку только при
+ * первой попытке, запущенной пользователем.
+ */
+object SessionPolicy {
+    fun holdTunnelOnFailure(everConnected: Boolean, persistent: Boolean): Boolean =
+        everConnected || persistent
+}
+
 enum class Verdict { HEALTHY, DEGRADED, DEAD }
 
 /** Считает подряд неудачные проверки туннеля. */

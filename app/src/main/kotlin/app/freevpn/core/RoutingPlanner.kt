@@ -20,13 +20,24 @@ object RuApps {
         "ru.yandex.market" to "Яндекс Маркет",
         "com.vkontakte.android" to "VK",
         "com.vk.vkvideo" to "VK Видео",
-        "org.telegram.messenger" to "Telegram",
+        "ru.ok.android" to "Одноклассники",
+        "ru.mail.mailapp" to "Почта Mail",
+        "ru.yandex.mail" to "Яндекс Почта",
+        "ru.kinopoisk" to "Кинопоиск",
+        "ru.dublgis.dgismobile" to "2ГИС",
+        "ru.vk.store" to "RuStore",
+        "ru.mts.mymts" to "Мой МТС",
+        "ru.megafon.mlk" to "МегаФон",
+        "ru.beeline.services" to "Мой Билайн",
+        "ru.tele2.mytele2" to "t2 (Tele2)",
         "ru.ozon.app.android" to "Ozon",
         "com.wildberries.ru" to "Wildberries",
         "com.avito.android" to "Авито",
         "ru.nspk.mirpay" to "Mir Pay",
         "ru.sberbank.sberpay" to "СберПэй"
     )
+    // Telegram намеренно НЕ в списке: это не российский сервис, а звонки в нём в России
+    // ограничены с августа 2025 г. — в обход VPN они бы как раз не работали.
 }
 
 object RoutingPlanner {

@@ -2,8 +2,11 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    # freevpn — основная ветка репозитория; без неё пуши не собирались.
+    branches: [main, freevpn]
     tags: ["v*"]
+  pull_request:
+    branches: [main, freevpn]
   workflow_dispatch:
 
 permissions:
@@ -57,6 +60,15 @@ jobs:
 
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk FreeVPN.apk
+
+      - name: Inspect APK
+        run: |
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          ls -l FreeVPN.apk
+          sha256sum FreeVPN.apk
+          "$BT/aapt2" dump badging FreeVPN.apk | grep -E "^(package|sdkVersion|targetSdkVersion|uses-permission|native-code|application-label:)"
+          "$BT/apksigner" verify --verbose --print-certs FreeVPN.apk | grep -E "^Verified|Signer #1 certificate (DN|SHA-256)"
+          unzip -l FreeVPN.apk | grep -E "lib/.*\.so"
 
       - uses: actions/upload-artifact@v4
         with:

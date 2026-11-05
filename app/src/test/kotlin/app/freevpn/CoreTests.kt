@@ -7,6 +7,7 @@ import app.freevpn.core.RoutingPlanner
 import app.freevpn.core.ServerProfile
 import app.freevpn.core.ServerScorer
 import app.freevpn.core.ServerStats
+import app.freevpn.core.SessionPolicy
 import app.freevpn.core.SpeedMeter
 import app.freevpn.core.SplitPlan
 import app.freevpn.core.SubscriptionParser
@@ -17,6 +18,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.net.Inet4Address
+import java.net.Inet6Address
 
 private const val CONF = """
 # Name: Test DE
@@ -102,6 +105,15 @@ class ScorerTest {
         assertEquals(listOf("c", "b", "a"), order)
     }
 
+    @Test fun tunnelIsHeldOnceConnectedOrStartedBySystem() {
+        // Первая ручная попытка без успеха: туннель опускаем и показываем ошибку.
+        assertFalse(SessionPolicy.holdTunnelOnFailure(everConnected = false, persistent = false))
+        // Обрыв после подключения: туннель держим, трафик не уходит мимо VPN.
+        assertTrue(SessionPolicy.holdTunnelOnFailure(everConnected = true, persistent = false))
+        // Запуск системой («Постоянный VPN»): держим даже до первого успеха.
+        assertTrue(SessionPolicy.holdTunnelOnFailure(everConnected = false, persistent = true))
+    }
+
     @Test fun backoffGrowsAndCaps() {
         assertEquals(listOf(1, 2, 4, 8, 16, 30, 30), (1..7).map { Backoff.seconds(it) })
     }
@@ -167,9 +179,9 @@ class TunnelConfigFactoryTest {
     @Test fun forcesFullTunnelKeepaliveDnsAndMtu() {
         val cfg = TunnelConfigFactory.build(CONF, SplitPlan.NONE)
         val peer = cfg.peers.single()
-        val allowed = peer.allowedIps.map { it.toString() }
-        assertTrue("0.0.0.0/0" in allowed)
-        assertTrue("::/0" in allowed)
+        // Сравниваем адреса, а не текст: на JVM "::" печатается как "0:0:0:0:0:0:0:0".
+        assertTrue(peer.allowedIps.any { it.address is Inet4Address && it.mask == 0 })
+        assertTrue(peer.allowedIps.any { it.address is Inet6Address && it.mask == 0 })
         assertEquals(25, peer.persistentKeepalive.get())
         assertEquals(TunnelConfigFactory.DEFAULT_MTU, cfg.`interface`.mtu.get())
         assertFalse(cfg.`interface`.dnsServers.isEmpty())

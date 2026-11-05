@@ -2,6 +2,7 @@ package app.freevpn.ui
 
 import android.app.Activity
 import android.net.VpnService
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -79,6 +80,7 @@ fun HomeScreen(app: FreeVpnApp) {
 
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == Activity.RESULT_OK) vpn.connect(app.prefs.selectedServerId)
+        else Toast.makeText(ctx, "Без разрешения Android VPN не запустится", Toast.LENGTH_LONG).show()
     }
 
     fun toggle() {
