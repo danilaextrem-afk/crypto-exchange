@@ -65,7 +65,8 @@ TODO/FIXME в коде не найдено.
 - Unit-тесты: 21 из 21 прошли (JVM).
 - Release-APK `FreeVPN.apk` собран: пакет `app.freevpn`, версия 0.2.0 (код 2), minSdk 26 (Android 8), targetSdk 35,
   подпись APK Signature Scheme v2 проверена `apksigner`, нативные библиотеки WireGuard для arm64-v8a, armeabi-v7a, x86_64,
-  размер ≈ 15,8 МБ. Разрешения: только `INTERNET` и `ACCESS_NETWORK_STATE`.
+  размер ≈ 15,8 МБ. Разрешения: `INTERNET`, `ACCESS_NETWORK_STATE` и служебное `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`,
+  которое AndroidX добавляет само (защищает внутренние приёмники приложения, доступа к данным не даёт).
 
 ### 3.2. Сквозные тесты (workflow `E2E on emulator`)
 
