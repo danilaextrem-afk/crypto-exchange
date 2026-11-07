@@ -30,7 +30,7 @@ TCPDUMP=$!
 ./gradlew --no-daemon :app:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.wgConf1="$(cat "$RUNNER_TEMP/c1.b64")" \
   -Pandroid.testInstrumentationRunnerArguments.wgConf2="$(cat "$RUNNER_TEMP/c2.b64")" \
-  -Pandroid.testInstrumentationRunnerArguments.nodePin="$(cat "$RUNNER_TEMP/node.pin" 2>/dev/null)"
+  -Pandroid.testInstrumentationRunnerArguments.nodePin="$(base64 -w0 "$RUNNER_TEMP/node.pin" 2>/dev/null)"
 RC=$?
 
 sleep 2
