@@ -51,9 +51,20 @@ object DirectoryParser {
 
 object Countries {
     /** Название страны по двухбуквенному коду на русском; для неизвестного кода — сам код. */
+    // Фиксированные названия: платформенные данные у разных устройств и JDK расходятся
+    // (например, «Соединённые Штаты» вместо «США»), а интерфейс должен выглядеть одинаково.
+    private val known = mapOf(
+        "DE" to "Германия", "NL" to "Нидерланды", "FR" to "Франция", "PL" to "Польша", "US" to "США",
+        "GB" to "Великобритания", "FI" to "Финляндия", "SE" to "Швеция", "CH" to "Швейцария",
+        "AT" to "Австрия", "CZ" to "Чехия", "ES" to "Испания", "IT" to "Италия", "CA" to "Канада",
+        "JP" to "Япония", "SG" to "Сингапур", "KZ" to "Казахстан", "AM" to "Армения",
+        "TR" to "Турция", "AE" to "ОАЭ", "LV" to "Латвия", "LT" to "Литва", "EE" to "Эстония"
+    )
+
     fun name(code: String): String {
         if (code.length != 2 || code == "??") return "Неизвестно"
-        val n = Locale.Builder().setRegion(code).build().getDisplayCountry(Locale.forLanguageTag("ru"))
+        known[code.uppercase()]?.let { return it }
+        val n =Locale.Builder().setRegion(code).build().getDisplayCountry(Locale.forLanguageTag("ru"))
         return if (n.isBlank() || n == code) code else n
     }
 }
