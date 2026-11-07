@@ -65,9 +65,18 @@ class Prefs(ctx: Context) {
         get() = plain.getLong("subRefresh", 0L)
         set(v) = plain.edit().putLong("subRefresh", v).apply()
 
+    var lastDirectoryRefresh: Long
+        get() = plain.getLong("dirRefresh", 0L)
+        set(v) = plain.edit().putLong("dirRefresh", v).apply()
+
     var serversJson: String
         get() = vault.getString("servers", "[]") ?: "[]"
         set(v) = vault.edit().putString("servers", v).apply()
+
+    /** Ключи и конфиги, выданные узлами каталога: {"id": {"priv": "...", "config": "..."}}. Только в защищённом хранилище. */
+    var nodeCredsJson: String
+        get() = vault.getString("nodeCreds", "{}") ?: "{}"
+        set(v) = vault.edit().putString("nodeCreds", v).apply()
 
     var statsJson: String
         get() = plain.getString("stats", "{}") ?: "{}"

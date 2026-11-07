@@ -138,7 +138,10 @@ class VpnManager(
         prefs.mode, installedLauncherPackages(), prefs.vpnApps, prefs.directApps, app.packageName
     )
 
-    fun connect(preferredId: String? = prefs.selectedServerId) {
+    /** В режиме автовыбора предпочтений нет: лучший сервер определяют измерения. */
+    private fun defaultPreferred(): String? = if (prefs.autoSelect) null else prefs.selectedServerId
+
+    fun connect(preferredId: String? = defaultPreferred()) {
         benchJob?.cancel()
         val prev = session
         session = scope.launch {
@@ -207,7 +210,9 @@ class VpnManager(
         while (currentCoroutineContext().isActive) {
             val servers = repo.servers.value
             if (servers.isEmpty()) {
-                _state.value = VpnState.Failed("Нет серверов. Добавьте конфигурацию или подписку.")
+                _state.value = VpnState.Failed(
+                    "Список серверов пуст. Каталог узлов ещё не заполнен — см. README (раздел «Серверы»)."
+                )
                 return
             }
             val ordered = orderServers(servers, prefer, avoid)
@@ -245,6 +250,8 @@ class VpnManager(
                 Reason.NETWORK_CHANGED -> {
                     _state.value = VpnState.Reconnecting("Сеть изменилась")
                     log("Смена сети → переподключение")
+                    // Сеть другая — лучший сервер мог измениться, поэтому выбираем заново.
+                    if (prefs.autoSelect) prefer = null
                 }
                 Reason.UNHEALTHY -> {
                     _state.value = VpnState.Reconnecting("Сервер не отвечает, переключаюсь")
@@ -259,40 +266,66 @@ class VpnManager(
     private fun orderServers(servers: List<ServerProfile>, prefer: String?, avoid: Set<String>): List<ServerProfile> {
         val now = System.currentTimeMillis()
         val preferred = if (prefs.autoSelect) prefer?.takeIf { it !in avoid } else (prefs.selectedServerId ?: prefer)
+        // Свежая нагрузка узла (из последней проверки) точнее, чем записанная в каталоге.
+        val probes = repo.probes.value
+        val withLoad = servers.map { s -> probes[s.id]?.load?.let { s.copy(load = it) } ?: s }
         // Даже при ручном выборе остальные серверы остаются резервными.
-        return ServerScorer.order(servers, repo.stats.value, now, preferred, avoid)
+        return ServerScorer.order(withLoad, repo.stats.value, now, preferred, avoid)
     }
 
     /** Поднимает туннель на сервере и убеждается, что трафик реально ходит. */
     private suspend fun tryServer(s: ServerProfile, announce: Boolean): Boolean {
         if (announce) _state.value = VpnState.Connecting
-        val cfg = try {
-            TunnelConfigFactory.build(s.config, currentPlan())
-        } catch (e: Exception) {
-            log("Конфиг ${s.name}: ${e.message}")
-            repo.recordFailure(s.id)
-            return false
-        }
-        try {
-            withContext(Dispatchers.IO) {
-                backend.setState(tunnel, Tunnel.State.DOWN, null)
-                backend.setState(tunnel, Tunnel.State.UP, cfg)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            log("Не удалось поднять туннель ${s.name}: ${e.message}")
-            repo.recordFailure(s.id)
-            withContext(NonCancellable) { bringDown() }
-            return false
-        }
-        if (!waitHandshake(10_000)) {
-            log("${s.name}: нет рукопожатия WireGuard")
-            repo.recordFailure(s.id)
-            withContext(NonCancellable) { bringDown() }
-            return false
-        }
+        var reprovision = false
         var rtt: Long? = null
+        // Для узла каталога допускается один повтор с новой регистрацией: узел мог забыть
+        // устройство (долгая неактивность) или быть переустановлен.
+        for (round in 0..1) {
+            if (s.isNode) {
+                // Регистрация идёт по обычной сети. Если туннель ещё поднят (смена сервера),
+                // запрос ушёл бы в старый, возможно мёртвый туннель, поэтому гасим его заранее.
+                withContext(NonCancellable) { bringDown() }
+            }
+            val text = try {
+                repo.resolveConfig(s, force = reprovision)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("${s.name}: не удалось получить конфигурацию (${e.message})")
+                repo.recordFailure(s.id)
+                return false
+            }
+            val cfg = try {
+                TunnelConfigFactory.build(text, currentPlan())
+            } catch (e: Exception) {
+                log("Конфиг ${s.name}: ${e.message}")
+                repo.recordFailure(s.id)
+                return false
+            }
+            try {
+                withContext(Dispatchers.IO) {
+                    backend.setState(tunnel, Tunnel.State.DOWN, null)
+                    backend.setState(tunnel, Tunnel.State.UP, cfg)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("Не удалось поднять туннель ${s.name}: ${e.message}")
+                repo.recordFailure(s.id)
+                withContext(NonCancellable) { bringDown() }
+                return false
+            }
+            if (waitHandshake(10_000)) break
+            log("${s.name}: нет рукопожатия WireGuard")
+            withContext(NonCancellable) { bringDown() }
+            if (s.isNode && round == 0) {
+                log("${s.name}: регистрируюсь заново")
+                reprovision = true
+                continue
+            }
+            repo.recordFailure(s.id)
+            return false
+        }
         for (i in 1..3) {
             rtt = probeRtt()
             if (rtt != null) break
@@ -452,7 +485,7 @@ class VpnManager(
         )
 
         val ip = httpText("https://api.ipify.org")
-        val endpoint = connected?.server?.endpointHost
+        val endpoint = connected?.server?.publicHost
         out += when {
             ip == null -> DiagLine("Внешний IP", "не удалось определить", 1)
             connected == null -> DiagLine("Внешний IP", "$ip (VPN выключен)", 3)

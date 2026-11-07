@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, freevpn]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -53,10 +53,28 @@ jobs:
         run: ./gradlew --no-daemon :app:testDebugUnitTest
 
       - name: Build release APK
+        env:
+          DIRECTORY_URLS: ${{ vars.DIRECTORY_URLS }}
         run: ./gradlew --no-daemon :app:assembleRelease
 
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk FreeVPN.apk
+
+      - name: Verify APK
+        run: |
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          ls -l FreeVPN.apk
+          echo "--- подпись"
+          "$BT/apksigner" verify --verbose --print-certs FreeVPN.apk | head -12
+          echo "--- манифест"
+          "$BT/aapt2" dump badging FreeVPN.apk | grep -E "^package|^sdkVersion|^targetSdkVersion|^uses-permission|launchable-activity" | cut -c1-160
+          echo "--- содержимое"
+          unzip -l FreeVPN.apk > apk-listing.txt
+          grep -E "assets/directory.json|libwg-go.so" apk-listing.txt
+          grep -q "assets/directory.json" apk-listing.txt || { echo "В APK нет каталога узлов"; exit 1; }
+          grep -q "lib/arm64-v8a/libwg-go.so" apk-listing.txt || { echo "В APK нет нативной библиотеки WireGuard для arm64"; exit 1; }
+          "$BT/aapt2" dump badging FreeVPN.apk | grep -q "uses-permission: name='android.permission.INTERNET'" || { echo "Нет разрешения INTERNET"; exit 1; }
+          echo "APK проверен"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -74,3 +92,23 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: FreeVPN.apk
+
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Node tests
+        working-directory: server/node
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race -count=1 ./...
+      - name: Monitor tests
+        working-directory: server/monitor
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -count=1 ./...

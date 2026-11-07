@@ -1,0 +1,18 @@
+services:
+  node:
+    build: ./node
+    image: freevpn-node:local
+    container_name: freevpn-node
+    network_mode: host          # WireGuard и API работают на сетевом стеке самого сервера
+    cap_add: [NET_ADMIN]
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?задайте PUBLIC_HOST (его задаёт deploy.sh)}
+      WG_PORT: ${WG_PORT:-51820}
+      LISTEN: ${LISTEN:-:443}
+      SUBNET: ${SUBNET:-10.8.0.0/22}
+      ACTIVE_CAPACITY: ${ACTIVE_CAPACITY:-100}
+      REGISTRATIONS_PER_HOUR: ${REGISTRATIONS_PER_HOUR:-10}
+      STALE_DAYS: ${STALE_DAYS:-14}
+    volumes:
+      - ./state:/var/lib/freevpn

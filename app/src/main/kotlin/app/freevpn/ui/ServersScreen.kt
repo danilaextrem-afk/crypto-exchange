@@ -151,7 +151,8 @@ fun ServersScreen(app: FreeVpnApp) {
                             }
                             Text(parts.joinToString(" · "), style = MaterialTheme.typography.bodyMedium, color = TextLo)
                         }
-                        TextButton(onClick = { confirm = true }) { Text("Удалить", color = Bad) }
+                        // Узлы каталога управляются каталогом: после обновления они бы вернулись.
+                        if (s.source != "dir") TextButton(onClick = { confirm = true }) { Text("Удалить", color = Bad) }
                     }
                 }
                 if (confirm) {
