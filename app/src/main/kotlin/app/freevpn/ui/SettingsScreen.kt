@@ -42,6 +42,9 @@ fun SettingsScreen(app: FreeVpnApp) {
     var autoSelect by remember { mutableStateOf(app.prefs.autoSelect) }
     var autoConnect by remember { mutableStateOf(app.prefs.autoConnectOnLaunch) }
     var busy by remember { mutableStateOf(false) }
+    val version = remember {
+        runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: ""
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
         Text("Настройки", style = MaterialTheme.typography.headlineMedium)
@@ -98,7 +101,7 @@ fun SettingsScreen(app: FreeVpnApp) {
         Spacer(Modifier.height(6.dp))
         Panel(Modifier.fillMaxWidth()) {
             Text(
-                "FreeVPN 0.1.0\n\n" +
+                "FreeVPN $version\n\n" +
                     "• Протокол: WireGuard (официальная библиотека wireguard-android).\n" +
                     "• Серверы берутся из каталога узлов (вшит в приложение и обновляется по сети). " +
                     "Ключ создаётся на вашем телефоне; на узел отправляется только публичный ключ.\n" +

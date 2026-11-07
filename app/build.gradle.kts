@@ -14,12 +14,14 @@ android {
         applicationId = "app.freevpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         // Публичные https-адреса каталога узлов (через запятую). Задаются переменной DIRECTORY_URLS при сборке.
         val directoryUrls = (System.getenv("DIRECTORY_URLS") ?: "").replace("\"", "")
         buildConfigField("String", "DIRECTORY_URLS", "\"$directoryUrls\"")
+        // Сквозные тесты на эмуляторе с настоящим WireGuard-сервером (см. .github/workflows/e2e-emulator.yml).
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // directory/directory.json попадает в APK как assets/directory.json.
@@ -74,4 +76,9 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit-ktx:1.2.1")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
 }

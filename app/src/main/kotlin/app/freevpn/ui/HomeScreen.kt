@@ -2,6 +2,7 @@ package app.freevpn.ui
 
 import android.app.Activity
 import android.net.VpnService
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -98,6 +99,7 @@ fun HomeScreen(app: FreeVpnApp) {
 
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == Activity.RESULT_OK) vpn.connect()
+        else Toast.makeText(ctx, "Без разрешения Android VPN не запустится", Toast.LENGTH_LONG).show()
     }
 
     val busy = state is VpnState.Connecting || state is VpnState.Reconnecting
@@ -131,6 +133,8 @@ fun HomeScreen(app: FreeVpnApp) {
         while (true) {
             probing = true
             runCatching { app.repo.refreshProbes() }
+            // Конфигурации лучших узлов получаем заранее, пока VPN выключен.
+            runCatching { app.repo.prewarm(selectedId = if (auto) null else selectedId) }
             probing = false
             delay(60_000)
         }
@@ -273,6 +277,7 @@ fun HomeScreen(app: FreeVpnApp) {
                         probing = true
                         runCatching { app.repo.refreshDirectory() }
                         runCatching { app.repo.refreshProbes() }
+                        runCatching { app.repo.prewarm(selectedId = if (auto) null else selectedId) }
                         probing = false
                     }
                 }

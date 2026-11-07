@@ -202,7 +202,11 @@ class ServerRepository(
      * force = true — зарегистрироваться заново (тем же ключом, адрес сохранится).
      * Запрос идёт по обычной сети, поэтому вызывать нужно при погашенном туннеле.
      */
-    suspend fun resolveConfig(s: ServerProfile, force: Boolean = false): String = withContext(Dispatchers.IO) {
+    suspend fun resolveConfig(
+        s: ServerProfile,
+        force: Boolean = false,
+        allowNetwork: Boolean = true
+    ): String = withContext(Dispatchers.IO) {
         val api = s.api
         val pin = s.pin
         if (api == null || pin == null) return@withContext s.config
@@ -211,6 +215,7 @@ class ServerRepository(
             val saved = creds.optJSONObject(s.id)
             val cached = saved?.optString("config").orEmpty()
             if (!force && cached.isNotEmpty()) return@withLock cached
+            check(allowNetwork) { "регистрация на узле возможна только при выключенном VPN" }
 
             val savedPriv = saved?.optString("priv").orEmpty()
             val pair = if (NodeProtocol.isValidKey(savedPriv)) KeyPair(Key.fromBase64(savedPriv)) else KeyPair()
@@ -220,6 +225,23 @@ class ServerRepository(
             creds.put(s.id, JSONObject().put("priv", pair.privateKey.toBase64()).put("config", config))
             prefs.nodeCredsJson = creds.toString()
             config
+        }
+    }
+
+    /**
+     * Заранее получает конфигурации для нескольких лучших доступных узлов (и выбранного вручную),
+     * пока VPN выключен. Тогда подключение и переход на резервный узел не требуют сети вне туннеля.
+     */
+    suspend fun prewarm(maxNodes: Int = 3, selectedId: String? = null) {
+        val creds = runCatching { JSONObject(prefs.nodeCredsJson) }.getOrDefault(JSONObject())
+        val probes = _probes.value
+        val ranked = _servers.value.filter { it.isNode && probes[it.id]?.up == true }
+            .sortedBy { probes[it.id]?.rttMs ?: Long.MAX_VALUE }
+            .take(maxNodes)
+        val wanted = (listOfNotNull(_servers.value.firstOrNull { it.id == selectedId && it.isNode }) + ranked).distinctBy { it.id }
+        for (s in wanted) {
+            if (creds.optJSONObject(s.id)?.optString("config").orEmpty().isNotEmpty()) continue
+            runCatching { resolveConfig(s) }
         }
     }
 
