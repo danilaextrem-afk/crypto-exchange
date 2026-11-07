@@ -58,6 +58,31 @@ jobs:
           sudo wg show
           for i in 1 2; do sudo base64 -w0 "/root/freevpn-clients/client$i.conf" > "$RUNNER_TEMP/c$i.b64"; done
 
+      # Настоящий узел из server/node: свой интерфейс wg1, HTTPS-API с самоподписанным сертификатом.
+      # Эмулятор видит хост по адресу 10.0.2.2. Тест NodeE2ETest идёт по цепочке
+      # каталог -> проба с пином -> регистрация ключа -> туннель.
+      - name: Start real freevpn-node (server/node)
+        run: |
+          (cd server/node && go vet ./... && go test ./... && go build -o "$RUNNER_TEMP/freevpn-node" .)
+          sudo ip link add wg1 type wireguard
+          wg genkey | sudo tee /etc/wg1.key > /dev/null
+          sudo chmod 600 /etc/wg1.key
+          sudo wg set wg1 listen-port 51821 private-key /etc/wg1.key
+          sudo ip addr add 10.9.0.1/24 dev wg1
+          sudo ip link set wg1 mtu 1380 up
+          IFACE="$(ip -4 route show default | awk '{print $5; exit}')"
+          sudo iptables -A FORWARD -i wg1 -j ACCEPT
+          sudo iptables -A FORWARD -o wg1 -j ACCEPT
+          sudo iptables -t nat -A POSTROUTING -s 10.9.0.0/24 -o "$IFACE" -j MASQUERADE
+          sudo mkdir -p /var/lib/freevpn-ci
+          sudo env PUBLIC_HOST=10.0.2.2 LISTEN=:8443 WG_IF=wg1 WG_PORT=51821 SUBNET=10.9.0.0/24 \
+            STATE_DIR=/var/lib/freevpn-ci nohup "$RUNNER_TEMP/freevpn-node" > "$RUNNER_TEMP/node.log" 2>&1 &
+          for i in $(seq 1 20); do [ -s /var/lib/freevpn-ci/cert.pin ] && break; sleep 1; done
+          sudo cat /var/lib/freevpn-ci/cert.pin | tr -d '\n' > "$RUNNER_TEMP/node.pin"
+          echo "pin: $(cat "$RUNNER_TEMP/node.pin")"
+          cat "$RUNNER_TEMP/node.log"
+          curl -sk https://127.0.0.1:8443/v1/health; echo
+
       - name: Emulator tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -77,6 +102,8 @@ jobs:
         run: |
           echo "=== wg show (сервер)"; cat e2e-out/wg-show.txt 2>/dev/null || true
           echo "=== DNS"; cat e2e-out/dns-summary.txt 2>/dev/null || true
+          echo "=== wg1 (узел каталога)"; cat e2e-out/wg1-show.txt 2>/dev/null || true
+          echo "=== node.log"; cat e2e-out/node.log 2>/dev/null || true
           echo "=== release"; cat e2e-out/release-start.txt 2>/dev/null || true
           echo "=== тесты"
           for f in app/build/outputs/androidTest-results/connected/debug/*.xml app/build/outputs/androidTest-results/connected/*.xml; do
