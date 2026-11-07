@@ -17,9 +17,15 @@ android {
         versionCode = 2
         versionName = "0.2.0"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        // Публичные https-адреса каталога узлов (через запятую). Задаются переменной DIRECTORY_URLS при сборке.
+        val directoryUrls = (System.getenv("DIRECTORY_URLS") ?: "").replace("\"", "")
+        buildConfigField("String", "DIRECTORY_URLS", "\"$directoryUrls\"")
         // Сквозные тесты на эмуляторе с настоящим WireGuard-сервером (см. .github/workflows/e2e-emulator.yml).
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    // directory/directory.json попадает в APK как assets/directory.json.
+    sourceSets["main"].assets.srcDir(rootProject.file("directory"))
 
     signingConfigs {
         if (ciKeystore != null) {
@@ -46,7 +52,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     testOptions { unitTests.isReturnDefaultValues = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }

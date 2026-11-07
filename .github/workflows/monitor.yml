@@ -1,0 +1,29 @@
+name: Monitor nodes
+
+# Раз в два часа проверяет все узлы из directory/directory.json.
+# Если узел недоступен, запуск завершается ошибкой — GitHub пришлёт письмо владельцу репозитория.
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Test monitor
+        working-directory: server/monitor
+        run: go test ./...
+      - name: Check nodes
+        working-directory: server/monitor
+        run: go run . ../../directory/directory.json status.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: node-status
+          path: server/monitor/status.json
+          if-no-files-found: ignore

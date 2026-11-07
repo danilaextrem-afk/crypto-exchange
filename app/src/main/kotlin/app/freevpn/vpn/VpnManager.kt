@@ -180,11 +180,14 @@ class VpnManager(
         prefs.mode, installedLauncherPackages(), prefs.vpnApps, prefs.directApps, app.packageName
     )
 
+    /** В режиме автовыбора предпочтений нет: лучший сервер определяют измерения. */
+    private fun defaultPreferred(): String? = if (prefs.autoSelect) null else prefs.selectedServerId
+
     /**
      * @param persistent true — не сдаваться, если серверы не отвечают с первой попытки
      *   (запуск системой «Постоянный VPN», например сразу после перезагрузки, когда сети ещё нет).
      */
-    fun connect(preferredId: String? = prefs.selectedServerId, persistent: Boolean = false) {
+    fun connect(preferredId: String? = defaultPreferred(), persistent: Boolean = false) {
         benchJob?.cancel()
         val prev = session
         session = scope.launch {
@@ -280,7 +283,9 @@ class VpnManager(
             val servers = repo.servers.value
             if (servers.isEmpty()) {
                 withContext(NonCancellable) { bringDown() }
-                _state.value = VpnState.Failed("Нет серверов. Добавьте конфигурацию или подписку.")
+                _state.value = VpnState.Failed(
+                    "Список серверов пуст. Каталог узлов ещё не заполнен — см. README (раздел «Серверы»)."
+                )
                 return
             }
             val hold = SessionPolicy.holdTunnelOnFailure(everConnected, persistent)
@@ -337,6 +342,8 @@ class VpnManager(
                     _state.value = VpnState.Reconnecting("Сеть изменилась")
                     log("Смена сети → переподключение")
                     netChanged = true
+                    // Сеть другая — лучший сервер мог измениться: при автовыборе выбираем заново.
+                    if (prefs.autoSelect) prefer = null
                 }
                 Reason.TUNNEL_LOST -> {
                     _state.value = VpnState.Reconnecting("Туннель перезапускается")
@@ -357,8 +364,11 @@ class VpnManager(
     private fun orderServers(servers: List<ServerProfile>, prefer: String?, avoid: Set<String>): List<ServerProfile> {
         val now = System.currentTimeMillis()
         val preferred = if (prefs.autoSelect) prefer?.takeIf { it !in avoid } else (prefs.selectedServerId ?: prefer)
+        // Свежая нагрузка узла (из последней проверки) точнее, чем записанная в каталоге.
+        val probes = repo.probes.value
+        val withLoad = servers.map { s -> probes[s.id]?.load?.let { s.copy(load = it) } ?: s }
         // Даже при ручном выборе остальные серверы остаются резервными.
-        return ServerScorer.order(servers, repo.stats.value, now, preferred, avoid)
+        return ServerScorer.order(withLoad, repo.stats.value, now, preferred, avoid)
     }
 
     /**
@@ -370,12 +380,25 @@ class VpnManager(
         s: ServerProfile,
         announce: Boolean,
         holdOnFailure: Boolean = false,
-        reuse: Boolean = false
+        reuse: Boolean = false,
+        reprovisioned: Boolean = false
     ): Boolean {
         if (announce) _state.value = VpnState.Connecting
         val plan = currentPlan()
+        val text = try {
+            // Узел каталога: конфигурация берётся из сохранённых (их заранее получает репозиторий
+            // при выключенном VPN). Регистрация идёт по обычной сети, поэтому пока туннель поднят
+            // и держит трафик, новая регистрация невозможна — тогда сервер просто пропускается.
+            repo.resolveConfig(s, force = false, allowNetwork = !tunnelUp)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("${s.name}: нет конфигурации (${e.message})")
+            repo.recordFailure(s.id)
+            return false
+        }
         val cfg = try {
-            TunnelConfigFactory.build(s.config, plan)
+            TunnelConfigFactory.build(text, plan)
         } catch (e: Exception) {
             log("Конфиг ${s.name}: ${e.message}")
             repo.recordFailure(s.id)
@@ -412,6 +435,24 @@ class VpnManager(
         }
         if (!handshake) {
             log("${s.name}: нет рукопожатия WireGuard")
+            if (s.isNode && !reprovisioned && !holdOnFailure) {
+                // Узел мог забыть устройство (долго не было подключений) или быть переустановлен:
+                // регистрируемся заново (тем же ключом) по обычной сети и пробуем ещё раз.
+                withContext(NonCancellable) { bringDown() }
+                val refreshed = try {
+                    repo.resolveConfig(s, force = true, allowNetwork = true)
+                    true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log("${s.name}: повторная регистрация не удалась (${e.message})")
+                    false
+                }
+                if (refreshed) {
+                    log("${s.name}: зарегистрировался заново, пробую ещё раз")
+                    return tryServer(s, announce, holdOnFailure, reuse = false, reprovisioned = true)
+                }
+            }
             repo.recordFailure(s.id)
             if (!holdOnFailure) withContext(NonCancellable) { bringDown() }
             return false
@@ -646,7 +687,7 @@ class VpnManager(
         )
 
         val ip = httpText("https://api.ipify.org")
-        val endpoint = connected?.server?.endpointHost
+        val endpoint = connected?.server?.publicHost
         out += when {
             ip == null -> DiagLine("Внешний IP", "не удалось определить", 1)
             connected == null -> DiagLine("Внешний IP", if (vpnOff) "$ip (VPN выключен)" else "$ip (идёт переподключение)", 3)
