@@ -29,7 +29,8 @@ TCPDUMP=$!
 # 3. Сквозные тесты (debug-сборка с инструментацией).
 ./gradlew --no-daemon :app:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.wgConf1="$(cat "$RUNNER_TEMP/c1.b64")" \
-  -Pandroid.testInstrumentationRunnerArguments.wgConf2="$(cat "$RUNNER_TEMP/c2.b64")"
+  -Pandroid.testInstrumentationRunnerArguments.wgConf2="$(cat "$RUNNER_TEMP/c2.b64")" \
+  -Pandroid.testInstrumentationRunnerArguments.nodePin="$(base64 -w0 "$RUNNER_TEMP/node.pin" 2>/dev/null)"
 RC=$?
 
 sleep 2
@@ -43,6 +44,8 @@ for f in $(adb shell ls /data/local/tmp/freevpn-e2e/ 2>/dev/null | tr -d '\r'); 
 done
 adb logcat -d > "$OUT/logcat-instrumented.txt" || true
 sudo wg show > "$OUT/wg-show.txt" 2>&1 || true
+sudo wg show wg1 > "$OUT/wg1-show.txt" 2>&1 || true
+cp "$RUNNER_TEMP/node.log" "$OUT/node.log" 2>/dev/null || true
 sudo chmod a+r "$OUT"/*.pcap 2>/dev/null || true
 echo "DNS-пакетов из туннеля: $(sudo tcpdump -r "$OUT/dns-from-tunnel.pcap" -n 2>/dev/null | wc -l)" | tee "$OUT/dns-summary.txt"
 sudo tcpdump -r "$OUT/dns-from-tunnel.pcap" -n 2>/dev/null | head -20 >> "$OUT/dns-summary.txt" || true
